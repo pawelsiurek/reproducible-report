@@ -1,0 +1,285 @@
+---
+title: "Global Armed Conflict & Civil Unrest"
+subtitle: "An Exploratory Analysis of ACLED Data (1997–2026)"
+output:
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+    toc_depth: 2
+    theme: flatly
+    self_contained: true
+---
+<!-- Setup -->
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE,
+                      fig.width = 10, fig.height = 6, dpi = 150)
+
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(scales)
+library(forcats)
+library(lubridate)
+library(zoo)
+```
+
+<!-- Data Loading --> 
+```{r load-data, cache=TRUE}
+files <- c(
+  "Africa_aggregated_data_up_to-2026-02-28.xlsx",
+  "Asia-Pacific_aggregated_data_up_to-2026-02-28.xlsx",
+  "Europe-Central-Asia_aggregated_data_up_to-2026-02-28.xlsx",
+  "Latin-America-the-Caribbean_aggregated_data_up_to-2026-02-28.xlsx",
+  "Middle-East_aggregated_data_up_to-2026-02-28.xlsx",
+  "US-and-Canada_aggregated_data_up_to-2026-02-28.xlsx"
+)
+
+combined <- lapply(files, read_xlsx) |> bind_rows()
+
+combined <- combined |>
+  mutate(
+    WEEK = as.Date(WEEK),
+    YEAR = year(WEEK),
+    BROAD_REGION = case_when(
+      REGION %in% c("Northern Africa", "Eastern Africa", "Western Africa",
+                    "Middle Africa",   "Southern Africa")        ~ "Africa",
+      REGION %in% c("South Asia", "Southeast Asia",
+                    "East Asia", "Oceania")                      ~ "Asia-Pacific",
+      REGION %in% c("Caucasus and Central Asia", "Europe")       ~ "Europe & C. Asia",
+      REGION %in% c("South America", "Central America",
+                    "Caribbean")                                  ~ "Latin America",
+      REGION == "Middle East"                                     ~ "Middle East",
+      REGION == "North America"                                   ~ "N. America",
+      TRUE                                                        ~ "Other"
+    )
+  )
+
+civ_fat <- read_xlsx("number_of_reported_civilian_fatalities_by_country-year_as-of-06Mar2026.xlsx")
+tot_fat <- read_xlsx("number_of_reported_fatalities_by_country-year_as-of-06Mar2026.xlsx")
+```
+
+```{r plot-world-heatmap}
+library(maps)
+
+world_map <- map_data("world")
+
+country_fat_total <- tot_fat |>
+  filter(YEAR < 2026) |>
+  group_by(COUNTRY) |>
+  summarise(total = sum(FATALITIES, na.rm = TRUE), .groups = "drop") |>
+  mutate(COUNTRY = recode(COUNTRY,
+    "United States"          = "USA",
+    "United Kingdom"         = "UK",
+    "Democratic Republic of Congo" = "Democratic Republic of the Congo",
+    "Republic of Congo"      = "Republic of Congo",
+    "Czechia"                = "Czech Republic",
+    "North Macedonia"        = "Macedonia",
+    "Eswatini"               = "Swaziland",
+    "Trinidad and Tobago"    = "Trinidad",
+    "Antigua and Barbuda"    = "Antigua",
+    "Saint Kitts and Nevis"  = "Saint Kitts",
+    "Palestine"              = "Palestine"
+  ))
+
+map_joined <- world_map |>
+  left_join(country_fat_total, by = c("region" = "COUNTRY"))
+
+ggplot(map_joined, aes(x = long, y = lat, group = group, fill = total)) +
+  geom_polygon(colour = "#1a1a1a", linewidth = 0.08) +
+  scale_fill_gradientn(
+    colours  = c("#f7e6e0", "#e8a090", "#C0392B", "#7b1010", "#3d0000"),
+    na.value = "#d0d0d0",
+    name     = "Fatalities",
+    labels   = comma,
+    trans    = "log10",                  # log scale so smaller countries stay visible
+    breaks   = c(100, 1000, 10000, 100000, 250000)
+  ) +
+  coord_quickmap() +
+  labs(
+    title    = "Cumulative Reported Fatalities by Country (all years)",
+    subtitle = "Log scale · grey = no data · darker red = more deaths",
+    caption  = "Source: ACLED"
+  ) +
+  theme_void(base_size = 13) 
+```
+
+```{r plot-top15}
+top15 <- tot_fat |>
+  filter(YEAR < 2026) |>
+  group_by(COUNTRY) |>
+  summarise(total = sum(FATALITIES, na.rm = TRUE), .groups = "drop") |>
+  slice_max(total, n = 15) |>
+  left_join(
+    civ_fat |>
+      filter(YEAR < 2026) |>
+      group_by(COUNTRY) |>
+      summarise(civilian = sum(FATALITIES, na.rm = TRUE), .groups = "drop"),
+    by = "COUNTRY"
+  ) |>
+  mutate(
+    non_civilian = total - civilian,
+    COUNTRY      = fct_reorder(COUNTRY, total)
+  ) |>
+  pivot_longer(cols = c(civilian, non_civilian),
+               names_to = "type", values_to = "fatalities") |>
+  mutate(type = recode(type,
+    "civilian"     = "Civilian",
+    "non_civilian" = "Non-civilian"
+  ))
+
+ggplot(top15, aes(x = COUNTRY, y = fatalities, fill = type)) +
+  geom_col(width = 0.7) +
+  scale_fill_manual(
+    values = c("Civilian" = "#C0392B", "Non-civilian" = "#BDC3C7"),
+    name   = NULL
+  ) +
+  scale_y_continuous(labels = comma) +
+  coord_flip() +
+  labs(
+    title    = "Top 15 Deadliest Countries (all years)",
+    subtitle = "Red = civilian fatalities · grey = non-civilian",
+    x        = NULL,
+    y        = "Reported fatalities",
+    caption  = "Source: ACLED"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title         = element_text(face = "bold", colour = "#1a2744"),
+    plot.subtitle      = element_text(colour = "#666", size = 11),
+    plot.caption       = element_text(colour = "#999", size = 9),
+    legend.position    = "bottom",
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor   = element_blank()
+  )
+```
+
+```{r plot-region-composition}
+event_pal <- c(
+  "Battles"                    = "#C0392B",
+  "Explosions/Remote violence" = "#E67E22",
+  "Violence against civilians" = "#8E44AD",
+  "Protests"                   = "#2980B9",
+  "Riots"                      = "#16A085",
+  "Strategic developments"     = "#95A5A6"
+)
+
+region_comp <- combined |>
+  filter(BROAD_REGION != "Other", YEAR >= 2016) |>
+  group_by(BROAD_REGION, EVENT_TYPE) |>
+  summarise(Events = sum(EVENTS, na.rm = TRUE), .groups = "drop") |>
+  group_by(BROAD_REGION) |>
+  mutate(
+    Share        = Events / sum(Events),
+    BROAD_REGION = fct_reorder(BROAD_REGION, Events, .fun = sum, .desc = FALSE)
+  ) |>
+  ungroup() |>
+  mutate(EVENT_TYPE = factor(EVENT_TYPE, levels = names(event_pal)))
+
+ggplot(region_comp, aes(x = BROAD_REGION, y = Share, fill = EVENT_TYPE)) +
+  geom_col(width = 0.7, colour = "white", linewidth = 0.3) +
+  scale_fill_manual(values = event_pal, name = NULL) +
+  scale_y_continuous(labels = percent_format(accuracy = 1), expand = c(0, 0)) +
+  coord_flip() +
+  labs(
+    title    = "Conflict Event Composition by Region (2016–2026)",
+    subtitle = "Each bar sums to 100% - shows the dominant mode of conflict per region",
+    x        = NULL,
+    y        = "Share of events",
+    caption  = "Source: ACLED"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title         = element_text(face = "bold", colour = "#1a2744"),
+    plot.subtitle      = element_text(colour = "#666", size = 11),
+    plot.caption       = element_text(colour = "#999", size = 9),
+    legend.position    = "bottom",
+    legend.key.size    = unit(0.4, "cm"),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor   = element_blank()
+  ) +
+  guides(fill = guide_legend(nrow = 2))
+```
+
+```{r plot-ukraine-weekly}
+ukraine_weekly <- combined |>
+  filter(COUNTRY == "Ukraine", YEAR >= 2020) |>
+  group_by(WEEK) |>
+  summarise(
+    Fatalities = sum(FATALITIES, na.rm = TRUE),
+    .groups    = "drop"
+  ) |>
+  arrange(WEEK) |>
+  mutate(rolling_avg = rollmean(Fatalities, k = 4, fill = NA, align = "right"))
+
+ggplot(ukraine_weekly, aes(x = WEEK)) +
+  geom_col(aes(y = Fatalities), fill = "#C0392B", alpha = 0.4, width = 5) +
+  geom_line(aes(y = rolling_avg), colour = "#C0392B", linewidth = 1.2) +
+  geom_vline(xintercept = as.Date("2022-02-24"),
+             linetype = "dashed", colour = "#1a2744", linewidth = 0.8) +
+  annotate("text",
+           x     = as.Date("2022-05-01"),
+           y     = max(ukraine_weekly$Fatalities, na.rm = TRUE) * 0.95,
+           label = "Full-scale invasion\n24 Feb 2022",
+           hjust = 0, colour = "#1a2744", size = 3.5, fontface = "italic") +
+  scale_x_date(date_breaks = "6 months", date_labels = "%b %Y") +
+  scale_y_continuous(labels = comma) +
+  labs(
+    title    = "Ukraine - Weekly Reported Fatalities (2020–2026)",
+    subtitle = "Bars = weekly count · line = 4-week rolling average",
+    x        = NULL,
+    y        = "Fatalities",
+    caption  = "Source: ACLED"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title       = element_text(face = "bold", colour = "#1a2744"),
+    plot.subtitle    = element_text(colour = "#666", size = 11),
+    plot.caption     = element_text(colour = "#999", size = 9),
+    axis.text.x      = element_text(angle = 45, hjust = 1),
+    panel.grid.minor = element_blank()
+  )
+```
+
+```{r plot1-global-trend}
+yearly <- combined |>
+  filter(YEAR >= 2010, YEAR <= 2025) |>
+  group_by(YEAR) |>
+  summarise(
+    Events     = sum(EVENTS,     na.rm = TRUE),
+    Fatalities = sum(FATALITIES, na.rm = TRUE),
+    .groups    = "drop"
+  )
+
+scale_factor <- max(yearly$Events) / max(yearly$Fatalities)
+
+ggplot(yearly, aes(x = YEAR)) +
+  geom_col(aes(y = Events), fill = "#2980B9", alpha = 0.8, width = 0.7) +
+  geom_line(aes(y = Fatalities * scale_factor),
+            colour = "#C0392B", linewidth = 1.3) +
+  geom_point(aes(y = Fatalities * scale_factor),
+             colour = "#C0392B", size = 3, shape = 21,
+             fill = "white", stroke = 1.8) +
+  scale_x_continuous(breaks = 2010:2025) +
+  scale_y_continuous(
+    name     = "Events recorded",
+    labels   = comma,
+    sec.axis = sec_axis(~ . / scale_factor, name = "Reported fatalities", labels = comma)
+  ) +
+  labs(
+    title    = "Global Conflict Events and Fatalities, 2010–2025",
+    subtitle = "Bars = events (left axis)  ·  Line = fatalities (right axis)",
+    x        = NULL
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title         = element_text(face = "bold", colour = "#1a2744"),
+    plot.subtitle      = element_text(colour = "#666", size = 11),
+    axis.title.y.left  = element_text(colour = "#2980B9"),
+    axis.title.y.right = element_text(colour = "#C0392B"),
+    axis.text.x        = element_text(angle = 45, hjust = 1),
+    panel.grid.minor   = element_blank()
+  )
+```
