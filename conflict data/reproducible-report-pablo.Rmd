@@ -1,17 +1,19 @@
+
+
 ---
-title: "Global Armed Conflict & Civil Unrest"
-subtitle: "An Exploratory Analysis of ACLED Data (1997–2026)"
+title: ""
 output:
   html_document:
     toc: true
-    toc_float:
-      collapsed: false
-      smooth_scroll: true
-    toc_depth: 2
+    toc_float: true
+    toc_depth: 3
     theme: flatly
     self_contained: true
+    includes:
+      before_body: logo.html
 ---
-<!-- Setup -->
+
+
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE,
                       fig.width = 10, fig.height = 6, dpi = 150)
@@ -24,9 +26,19 @@ library(scales)
 library(forcats)
 library(lubridate)
 library(zoo)
+library(plotly)
 ```
 
-<!-- Data Loading --> 
+# Executive Summary
+
+This report analyzes global patterns of armed conflict and civil unrest using data from the
+:contentReference[oaicite:1]{index=1}
+covering the period up to **February 2026**.
+
+The objective is to provide a data-driven overview of where violence occurs, how it evolves over time,
+and which regions and countries are most affected.
+
+
 ```{r load-data, cache=TRUE}
 files <- c(
   "Africa_aggregated_data_up_to-2026-02-28.xlsx",
@@ -61,50 +73,212 @@ civ_fat <- read_xlsx("number_of_reported_civilian_fatalities_by_country-year_as-
 tot_fat <- read_xlsx("number_of_reported_fatalities_by_country-year_as-of-06Mar2026.xlsx")
 ```
 
-```{r plot-world-heatmap}
-library(maps)
 
-world_map <- map_data("world")
+# Global Trends in Conflict Events and Fatalities
+
+```{r plot1-global-trend}
+yearly <- combined |>
+  filter(YEAR >= 2010, YEAR <= 2025) |>
+  group_by(YEAR) |>
+  summarise(
+    Events     = sum(EVENTS,     na.rm = TRUE),
+    Fatalities = sum(FATALITIES, na.rm = TRUE),
+    .groups    = "drop"
+  )
+
+scale_factor <- max(yearly$Events) / max(yearly$Fatalities)
+
+ggplot(yearly, aes(x = YEAR)) +
+  geom_col(aes(y = Events), fill = "#2980B9", alpha = 0.8, width = 0.7) +
+  geom_line(aes(y = Fatalities * scale_factor),
+            colour = "#C0392B", linewidth = 1.3) +
+  geom_point(aes(y = Fatalities * scale_factor),
+             colour = "#C0392B", size = 3, shape = 21,
+             fill = "white", stroke = 1.8) +
+  scale_x_continuous(breaks = 2010:2025) +
+  scale_y_continuous(
+    name     = "Events recorded",
+    labels   = comma,
+    sec.axis = sec_axis(~ . / scale_factor, name = "Reported fatalities", labels = comma)
+  ) +
+  labs(
+    title    = NULL,
+    subtitle = "Bars = events (left axis)  ·  Line = fatalities (right axis)",
+    x        = NULL
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title         = element_text(face = "bold", colour = "#1a2744"),
+    plot.subtitle      = element_text(colour = "#666", size = 11),
+    axis.title.y.left  = element_text(colour = "#2980B9"),
+    axis.title.y.right = element_text(colour = "#C0392B"),
+    axis.text.x        = element_text(angle = 45, hjust = 1),
+    panel.grid.minor   = element_blank()
+  )
+```
+
+Over the past fifteen years, both the number of conflict events and total fatalities have increased significantly. 
+This indicates that global instability is becoming more frequent and more lethal.
+
+# Global Distribution of Conflict Fatalities
+
+```{r plot-world-heatmap, fig.width=5, fig.height=2}
+library(maps)
+library(ggplot2)
+library(dplyr)
+library(scales)
+library(plotly)
+
+world_map <- map_data("world") |>
+  filter(lat > -60)
 
 country_fat_total <- tot_fat |>
   filter(YEAR < 2026) |>
   group_by(COUNTRY) |>
   summarise(total = sum(FATALITIES, na.rm = TRUE), .groups = "drop") |>
-  mutate(COUNTRY = recode(COUNTRY,
-    "United States"          = "USA",
-    "United Kingdom"         = "UK",
-    "Democratic Republic of Congo" = "Democratic Republic of the Congo",
-    "Republic of Congo"      = "Republic of Congo",
-    "Czechia"                = "Czech Republic",
-    "North Macedonia"        = "Macedonia",
-    "Eswatini"               = "Swaziland",
-    "Trinidad and Tobago"    = "Trinidad",
-    "Antigua and Barbuda"    = "Antigua",
-    "Saint Kitts and Nevis"  = "Saint Kitts",
-    "Palestine"              = "Palestine"
-  ))
+  mutate(
+    COUNTRY = recode(COUNTRY,
+      "United States" = "USA",
+      "United Kingdom" = "UK",
+      "Democratic Republic of Congo" = "Democratic Republic of the Congo",
+      "Republic of Congo" = "Republic of Congo",
+      "Czechia" = "Czech Republic",
+      "North Macedonia" = "Macedonia",
+      "Eswatini" = "Swaziland",
+      "Trinidad and Tobago" = "Trinidad",
+      "Antigua and Barbuda" = "Antigua",
+      "Saint Kitts and Nevis" = "Saint Kitts",
+      "Palestine" = "Palestine"
+    ),
+    fatality_group = cut(
+      total,
+      breaks = c(0, 1000, 10000, 50000, 100000, Inf),
+      labels = c("Low", "Moderate", "High", "Very High", "Extreme"),
+      include.lowest = TRUE
+    )
+  )
 
 map_joined <- world_map |>
   left_join(country_fat_total, by = c("region" = "COUNTRY"))
 
-ggplot(map_joined, aes(x = long, y = lat, group = group, fill = total)) +
-  geom_polygon(colour = "#1a1a1a", linewidth = 0.08) +
-  scale_fill_gradientn(
-    colours  = c("#f7e6e0", "#e8a090", "#C0392B", "#7b1010", "#3d0000"),
-    na.value = "#d0d0d0",
-    name     = "Fatalities",
-    labels   = comma,
-    trans    = "log10",                  # log scale so smaller countries stay visible
-    breaks   = c(100, 1000, 10000, 100000, 250000)
+p <- ggplot(map_joined,
+            aes(
+              long, lat,
+              group = group,
+              fill = fatality_group,
+              text = paste0(
+                "Country: ", region,
+                "<br>Fatalities: ", comma(total)
+              )
+            )) +
+
+  geom_polygon(colour = "white", linewidth = 0.15) +
+
+  scale_fill_manual(
+    values = c(
+      "Low" = "#fde0dd",
+      "Moderate" = "#fcbba1",
+      "High" = "#fb6a4a",
+      "Very High" = "#cb181d",
+      "Extreme" = "#67000d"
+    ),
+    na.value = "#d9d9d9",
+    name = "Fatality concentration"
   ) +
-  coord_quickmap() +
+
+  coord_quickmap(expand = FALSE) +
+
+  theme_void()
+
+# convert to interactive plot
+ggplotly(p, tooltip = "text") %>%
+  layout(
+    margin = list(l = 0, r = 0, t = 0, b = 0), height = 340
+  ) %>%
+  config(displayModeBar = FALSE)
+```
+This map highlights the unequal global distribution of conflict-related fatalities. 
+A small number of countries account for a disproportionately large share of reported deaths, revealing concentrated conflict hotspots.
+
+# Global Distribution of Conflict Fatalities
+
+```{r plot-fatalities-by-region-pie}
+library(dplyr)
+library(ggplot2)
+library(scales)
+
+region_fatalities <- combined |>
+  filter(YEAR >= 2016) |>
+  group_by(BROAD_REGION) |>
+  summarise(fatalities = sum(FATALITIES, na.rm = TRUE), .groups = "drop") |>
+  mutate(share = fatalities / sum(fatalities))
+
+ggplot(region_fatalities, aes(x = "", y = share, fill = BROAD_REGION)) +
+  geom_col(width = 1, color = "white") +
+  coord_polar(theta = "y") +
+  scale_y_continuous(labels = percent) +
   labs(
-    title    = "Cumulative Reported Fatalities by Country (all years)",
-    subtitle = "Log scale · grey = no data · darker red = more deaths",
+    subtitle = "Share of total reported deaths by region (2016–2025)",
+    fill = NULL
+  ) +
+  theme_void()
+```
+
+This chart shows how conflict-related fatalities are distributed across global regions. It highlights that a small number of regions account for most of the reported deaths, emphasizing the strong geographic concentration of global conflict.
+
+# Types of Conflict Events by Region 
+
+```{r plot-region-composition}
+event_pal <- c(
+  "Battles"                    = "#C0392B",
+  "Explosions/Remote violence" = "#E67E22",
+  "Violence against civilians" = "#8E44AD",
+  "Protests"                   = "#2980B9",
+  "Riots"                      = "#16A085",
+  "Strategic developments"     = "#95A5A6"
+)
+
+region_comp <- combined |>
+  filter(BROAD_REGION != "Other", YEAR >= 2016) |>
+  group_by(BROAD_REGION, EVENT_TYPE) |>
+  summarise(Events = sum(EVENTS, na.rm = TRUE), .groups = "drop") |>
+  group_by(BROAD_REGION) |>
+  mutate(
+    Share        = Events / sum(Events),
+    BROAD_REGION = fct_reorder(BROAD_REGION, Events, .fun = sum, .desc = FALSE)
+  ) |>
+  ungroup() |>
+  mutate(EVENT_TYPE = factor(EVENT_TYPE, levels = names(event_pal)))
+
+ggplot(region_comp, aes(x = BROAD_REGION, y = Share, fill = EVENT_TYPE)) +
+  geom_col(width = 0.7, colour = "white", linewidth = 0.3) +
+  scale_fill_manual(values = event_pal, name = NULL) +
+  scale_y_continuous(labels = percent_format(accuracy = 1), expand = c(0, 0)) +
+  coord_flip() +
+  labs(
+    title    = NULL,
+    subtitle = "Each bar sums to 100% - shows the dominant mode of conflict per region",
+    x        = NULL,
+    y        = "Share of events",
     caption  = "Source: ACLED"
   ) +
-  theme_void(base_size = 13) 
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title         = element_text(face = "bold", colour = "#1a2744"),
+    plot.subtitle      = element_text(colour = "#666", size = 11),
+    plot.caption       = element_text(colour = "#999", size = 9),
+    legend.position    = "bottom",
+    legend.key.size    = unit(0.4, "cm"),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor   = element_blank()
+  ) +
+  guides(fill = guide_legend(nrow = 2))
 ```
+
+Conflict manifests differently across regions. 
+While some regions are dominated by armed battles, others experience more protests, riots, or violence against civilians, reflecting diverse political and social dynamics.
+
+# Top 15 Countries by Conflict Fatalities
 
 ```{r plot-top15}
 top15 <- tot_fat |>
@@ -139,7 +313,7 @@ ggplot(top15, aes(x = COUNTRY, y = fatalities, fill = type)) +
   scale_y_continuous(labels = comma) +
   coord_flip() +
   labs(
-    title    = "Top 15 Deadliest Countries (all years)",
+    title    = NULL,
     subtitle = "Red = civilian fatalities · grey = non-civilian",
     x        = NULL,
     y        = "Reported fatalities",
@@ -147,7 +321,6 @@ ggplot(top15, aes(x = COUNTRY, y = fatalities, fill = type)) +
   ) +
   theme_minimal(base_size = 13) +
   theme(
-    plot.title         = element_text(face = "bold", colour = "#1a2744"),
     plot.subtitle      = element_text(colour = "#666", size = 11),
     plot.caption       = element_text(colour = "#999", size = 9),
     legend.position    = "bottom",
@@ -156,52 +329,10 @@ ggplot(top15, aes(x = COUNTRY, y = fatalities, fill = type)) +
   )
 ```
 
-```{r plot-region-composition}
-event_pal <- c(
-  "Battles"                    = "#C0392B",
-  "Explosions/Remote violence" = "#E67E22",
-  "Violence against civilians" = "#8E44AD",
-  "Protests"                   = "#2980B9",
-  "Riots"                      = "#16A085",
-  "Strategic developments"     = "#95A5A6"
-)
+The countries with the highest total fatalities are not always those with the highest civilian losses. 
+This comparison helps distinguish conflicts primarily affecting combatants from those heavily impacting civilian populations.
 
-region_comp <- combined |>
-  filter(BROAD_REGION != "Other", YEAR >= 2016) |>
-  group_by(BROAD_REGION, EVENT_TYPE) |>
-  summarise(Events = sum(EVENTS, na.rm = TRUE), .groups = "drop") |>
-  group_by(BROAD_REGION) |>
-  mutate(
-    Share        = Events / sum(Events),
-    BROAD_REGION = fct_reorder(BROAD_REGION, Events, .fun = sum, .desc = FALSE)
-  ) |>
-  ungroup() |>
-  mutate(EVENT_TYPE = factor(EVENT_TYPE, levels = names(event_pal)))
-
-ggplot(region_comp, aes(x = BROAD_REGION, y = Share, fill = EVENT_TYPE)) +
-  geom_col(width = 0.7, colour = "white", linewidth = 0.3) +
-  scale_fill_manual(values = event_pal, name = NULL) +
-  scale_y_continuous(labels = percent_format(accuracy = 1), expand = c(0, 0)) +
-  coord_flip() +
-  labs(
-    title    = "Conflict Event Composition by Region (2016–2026)",
-    subtitle = "Each bar sums to 100% - shows the dominant mode of conflict per region",
-    x        = NULL,
-    y        = "Share of events",
-    caption  = "Source: ACLED"
-  ) +
-  theme_minimal(base_size = 13) +
-  theme(
-    plot.title         = element_text(face = "bold", colour = "#1a2744"),
-    plot.subtitle      = element_text(colour = "#666", size = 11),
-    plot.caption       = element_text(colour = "#999", size = 9),
-    legend.position    = "bottom",
-    legend.key.size    = unit(0.4, "cm"),
-    panel.grid.major.y = element_blank(),
-    panel.grid.minor   = element_blank()
-  ) +
-  guides(fill = guide_legend(nrow = 2))
-```
+# Ukraine Conflict Timeline
 
 ```{r plot-ukraine-weekly}
 ukraine_weekly <- combined |>
@@ -227,7 +358,7 @@ ggplot(ukraine_weekly, aes(x = WEEK)) +
   scale_x_date(date_breaks = "6 months", date_labels = "%b %Y") +
   scale_y_continuous(labels = comma) +
   labs(
-    title    = "Ukraine - Weekly Reported Fatalities (2020–2026)",
+    title    = NULL,
     subtitle = "Bars = weekly count · line = 4-week rolling average",
     x        = NULL,
     y        = "Fatalities",
@@ -243,43 +374,50 @@ ggplot(ukraine_weekly, aes(x = WEEK)) +
   )
 ```
 
-```{r plot1-global-trend}
-yearly <- combined |>
-  filter(YEAR >= 2010, YEAR <= 2025) |>
-  group_by(YEAR) |>
+The timeline shows a dramatic escalation following the full-scale invasion in February 2022. 
+This illustrates how a single geopolitical event can rapidly transform both the scale and intensity of violence.
+
+# Pre- and post-2022 shift in global conflict intensity
+
+```{r plot-conflict-shift}
+library(dplyr)
+library(ggplot2)
+library(scales)
+library(forcats)
+
+shift_data <- combined |>
+  filter(YEAR >= 2018, YEAR <= 2025) |>
+  mutate(period = ifelse(WEEK < as.Date("2022-02-24"),
+                         "Pre-2022",
+                         "Post-2022")) |>
+  group_by(BROAD_REGION, period) |>
   summarise(
-    Events     = sum(EVENTS,     na.rm = TRUE),
-    Fatalities = sum(FATALITIES, na.rm = TRUE),
-    .groups    = "drop"
+    events = sum(EVENTS, na.rm = TRUE),
+    fatalities = sum(FATALITIES, na.rm = TRUE),
+    .groups = "drop"
   )
 
-scale_factor <- max(yearly$Events) / max(yearly$Fatalities)
-
-ggplot(yearly, aes(x = YEAR)) +
-  geom_col(aes(y = Events), fill = "#2980B9", alpha = 0.8, width = 0.7) +
-  geom_line(aes(y = Fatalities * scale_factor),
-            colour = "#C0392B", linewidth = 1.3) +
-  geom_point(aes(y = Fatalities * scale_factor),
-             colour = "#C0392B", size = 3, shape = 21,
-             fill = "white", stroke = 1.8) +
-  scale_x_continuous(breaks = 2010:2025) +
-  scale_y_continuous(
-    name     = "Events recorded",
-    labels   = comma,
-    sec.axis = sec_axis(~ . / scale_factor, name = "Reported fatalities", labels = comma)
+ggplot(shift_data, aes(x = fct_reorder(BROAD_REGION, events), y = events, fill = period)) +
+  geom_col(position = "dodge", width = 0.7) +
+  coord_flip() +
+  scale_fill_manual(
+    values = c("Pre-2022" = "#95A5A6", "Post-2022" = "#C0392B"),
+    name = NULL
   ) +
+  scale_y_continuous(labels = comma) +
   labs(
-    title    = "Global Conflict Events and Fatalities, 2010–2025",
-    subtitle = "Bars = events (left axis)  ·  Line = fatalities (right axis)",
-    x        = NULL
+    title = "Global Shift in Conflict Activity After 2022",
+    subtitle = "Grey = pre-Ukraine war · Red = post-2022 escalation period",
+    x = NULL,
+    y = "Number of events",
+    caption = "Source: ACLED"
   ) +
   theme_minimal(base_size = 13) +
   theme(
-    plot.title         = element_text(face = "bold", colour = "#1a2744"),
-    plot.subtitle      = element_text(colour = "#666", size = 11),
-    axis.title.y.left  = element_text(colour = "#2980B9"),
-    axis.title.y.right = element_text(colour = "#C0392B"),
-    axis.text.x        = element_text(angle = 45, hjust = 1),
-    panel.grid.minor   = element_blank()
+    panel.grid.major.y = element_blank(),
+    legend.position = "bottom"
   )
 ```
+
+
+This chart compares conflict activity across regions before and after 2022. It highlights how the intensity of events shifted following 2022, with several regions experiencing a noticeable increase in violence and instability in the post-2022 period.
